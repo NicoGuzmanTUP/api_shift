@@ -11,4 +11,6 @@ public interface IShiftSwapService
     Task<ShiftSwapRequestDto> CancelSwapAsync(int swapRequestId, int userId);
     Task<ShiftSwapRequestDto?> GetSwapByIdAsync(int swapRequestId);
     Task<List<ShiftSwapRequestDto>> GetPendingSwapsAsync();
+    Task ApproveByHrAsync(int swapRequestId);
+    Task RejectByHrAsync(int swapRequestId);
 }

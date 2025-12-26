@@ -21,11 +21,9 @@ public partial class ShiftSwapRequest
 
     public string Status { get; set; }
 
-    public DateTime CreatedAt { get; set; }
+    public DateTime? CreatedAt { get; set; }
 
     public virtual User Requester { get; set; }
-
-    public virtual Shift RequesterShift { get; set; }
 
     public virtual Shift TargetShift { get; set; }
 

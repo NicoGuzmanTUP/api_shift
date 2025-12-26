@@ -13,11 +13,11 @@ public partial class shift_change_bdContext : DbContext
     {
     }
 
-    public virtual DbSet<Shift> Shifts { get; set; } = null!;
+    public virtual DbSet<Shift> Shifts { get; set; }
 
-    public virtual DbSet<ShiftSwapRequest> ShiftSwapRequests { get; set; } = null!;
+    public virtual DbSet<ShiftSwapRequest> ShiftSwapRequests { get; set; }
 
-    public virtual DbSet<User> Users { get; set; } = null!;
+    public virtual DbSet<User> Users { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -63,22 +63,14 @@ public partial class shift_change_bdContext : DbContext
 
             entity.HasOne(d => d.Requester).WithMany(p => p.ShiftSwapRequestRequesters)
                 .HasForeignKey(d => d.RequesterId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("shift_swap_requests_requester_id_fkey");
 
-            entity.HasOne(d => d.RequesterShift).WithMany(p => p.ShiftSwapRequestRequesterShifts)
-                .HasForeignKey(d => d.RequesterShiftId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
-                .HasConstraintName("shift_swap_requests_requester_shift_id_fkey");
-
-            entity.HasOne(d => d.TargetShift).WithMany(p => p.ShiftSwapRequestTargetShifts)
+            entity.HasOne(d => d.TargetShift).WithMany(p => p.ShiftSwapRequests)
                 .HasForeignKey(d => d.TargetShiftId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("shift_swap_requests_target_shift_id_fkey");
 
             entity.HasOne(d => d.TargetUser).WithMany(p => p.ShiftSwapRequestTargetUsers)
                 .HasForeignKey(d => d.TargetUserId)
-                .OnDelete(DeleteBehavior.ClientSetNull)
                 .HasConstraintName("shift_swap_requests_target_user_id_fkey");
         });
 

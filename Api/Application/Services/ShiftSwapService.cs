@@ -1,9 +1,11 @@
 using Api.Application.DTOs.ShiftSwaps;
 using Api.Application.Interfaces;
+using Api.Domain.Enums;
 using Api.Domain.Exceptions;
 using Api.Entities;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.Globalization;
 
 namespace Api.Application.Services;
 
@@ -52,7 +54,7 @@ public class ShiftSwapService : IShiftSwapService
             RequesterShiftId = request.RequesterShiftId,
             TargetShiftId = request.TargetShiftId,
             Reason = request.Reason,
-            Status = "PENDING",
+            Status = SwapRequestStatus.PENDING.ToString(),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -62,14 +64,23 @@ public class ShiftSwapService : IShiftSwapService
         _logger.Information("Solicitud de intercambio creada: {SwapId} por {RequesterId} para {TargetUserId}", 
             swapRequest.Id, requesterId, request.TargetUserId);
 
-        // Notificar a n8n (asincrónico, fire-and-forget)
+        // Prepare formatted shift info
+        string requesterShiftDate = requesterShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string requesterShiftTime = $"{requesterShift.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture)} - {requesterShift.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture)}";
+
+        // Notificar a n8n (asincrónico, fire-and-forget) including emails and shift info
         await _notifier.NotifyAsync("SHIFT_SWAP_REQUESTED", new
         {
             swapRequest.Id,
             swapRequest.RequesterId,
             swapRequest.TargetUserId,
             RequesterName = requester.Name,
-            TargetName = targetUser.Name
+            TargetName = targetUser.Name,
+            RequesterEmail = requester.Email,
+            TargetEmail = targetUser.Email,
+            ShiftDate = requesterShiftDate,
+            ShiftTime = requesterShiftTime,
+            swapRequest.Reason
         });
 
         return MapToDto(swapRequest);
@@ -84,15 +95,16 @@ public class ShiftSwapService : IShiftSwapService
         if (swap.TargetUserId != userId)
             throw new InvalidOperationException("No tienes permisos para aceptar esta solicitud");
 
-        if (swap.Status != "PENDING")
+        if (swap.Status != SwapRequestStatus.PENDING.ToString())
             throw new InvalidOperationException($"No puedes aceptar una solicitud con estado {swap.Status}");
 
-        swap.Status = "ACCEPTED";
+        // Set to PENDING_HR_APPROVAL instead of ACCEPTED
+        swap.Status = SwapRequestStatus.PENDING_HR_APPROVAL.ToString();
         await _context.SaveChangesAsync();
 
-        _logger.Information("Solicitud de intercambio aceptada: {SwapId} por usuario {UserId}", swapRequestId, userId);
+        _logger.Information("Solicitud de intercambio marcada para aprobación HR: {SwapId} por usuario {UserId}", swapRequestId, userId);
 
-        await _notifier.NotifyAsync("SHIFT_SWAP_ACCEPTED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+        await _notifier.NotifyAsync("SHIFT_SWAP_PENDING_HR", new { swap.Id, swap.RequesterId, swap.TargetUserId });
 
         return MapToDto(swap);
     }
@@ -106,10 +118,10 @@ public class ShiftSwapService : IShiftSwapService
         if (swap.TargetUserId != userId)
             throw new InvalidOperationException("No tienes permisos para rechazar esta solicitud");
 
-        if (swap.Status != "PENDING")
+        if (swap.Status != SwapRequestStatus.PENDING.ToString())
             throw new InvalidOperationException($"No puedes rechazar una solicitud con estado {swap.Status}");
 
-        swap.Status = "REJECTED";
+        swap.Status = SwapRequestStatus.REJECTED.ToString();
         await _context.SaveChangesAsync();
 
         _logger.Information("Solicitud de intercambio rechazada: {SwapId} por usuario {UserId}", swapRequestId, userId);
@@ -124,10 +136,10 @@ public class ShiftSwapService : IShiftSwapService
         var swap = await _context.ShiftSwapRequests.FindAsync(swapRequestId)
             ?? throw EntityNotFoundException.ForEntity("Solicitud", swapRequestId);
 
-        if (swap.Status != "ACCEPTED")
-            throw new InvalidOperationException("Solo se pueden aprobar solicitudes aceptadas");
+        if (swap.Status != SwapRequestStatus.ACCEPTED.ToString() && swap.Status != SwapRequestStatus.PENDING_HR_APPROVAL.ToString())
+            throw new InvalidOperationException("Solo se pueden aprobar solicitudes aceptadas o pendientes de HR");
 
-        swap.Status = "APPROVED";
+        swap.Status = SwapRequestStatus.APPROVED.ToString();
         await _context.SaveChangesAsync();
 
         _logger.Information("Solicitud de intercambio aprobada: {SwapId}", swapRequestId);
@@ -146,10 +158,10 @@ public class ShiftSwapService : IShiftSwapService
         if (swap.RequesterId != userId)
             throw new InvalidOperationException("No tienes permisos para cancelar esta solicitud");
 
-        if (swap.Status == "CANCELLED" || swap.Status == "APPROVED")
+        if (swap.Status == SwapRequestStatus.APPROVED.ToString())
             throw new InvalidOperationException($"No puedes cancelar una solicitud con estado {swap.Status}");
 
-        swap.Status = "CANCELLED";
+        swap.Status = SwapRequestStatus.CANCELLED.ToString();
         await _context.SaveChangesAsync();
 
         _logger.Information("Solicitud de intercambio cancelada: {SwapId} por usuario {UserId}", swapRequestId, userId);
@@ -157,6 +169,50 @@ public class ShiftSwapService : IShiftSwapService
         await _notifier.NotifyAsync("SHIFT_SWAP_CANCELLED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
 
         return MapToDto(swap);
+    }
+
+    // New HR methods
+    public async Task ApproveByHrAsync(int swapRequestId)
+    {
+        var swap = await _context.ShiftSwapRequests.FindAsync(swapRequestId)
+            ?? throw EntityNotFoundException.ForEntity("Solicitud", swapRequestId);
+
+        if (swap.Status != SwapRequestStatus.PENDING_HR_APPROVAL.ToString())
+            throw new InvalidOperationException("Solo se pueden aprobar solicitudes pendientes de HR");
+
+        swap.Status = SwapRequestStatus.APPROVED.ToString();
+
+        // Apply shift swap logic: swap shifts between users
+        var requesterShift = await _context.Shifts.FindAsync(swap.RequesterShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.RequesterShiftId);
+        var targetShift = await _context.Shifts.FindAsync(swap.TargetShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.TargetShiftId);
+
+        var tempUser = requesterShift.UserId;
+        requesterShift.UserId = targetShift.UserId;
+        targetShift.UserId = tempUser;
+
+        await _context.SaveChangesAsync();
+
+        _logger.Information("Solicitud de intercambio aprobada por HR: {SwapId}", swapRequestId);
+
+        await _notifier.NotifyAsync("SHIFT_SWAP_APPROVED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+    }
+
+    public async Task RejectByHrAsync(int swapRequestId)
+    {
+        var swap = await _context.ShiftSwapRequests.FindAsync(swapRequestId)
+            ?? throw EntityNotFoundException.ForEntity("Solicitud", swapRequestId);
+
+        if (swap.Status != SwapRequestStatus.PENDING_HR_APPROVAL.ToString())
+            throw new InvalidOperationException("Solo se pueden rechazar solicitudes pendientes de HR");
+
+        swap.Status = SwapRequestStatus.REJECTED.ToString();
+        await _context.SaveChangesAsync();
+
+        _logger.Information("Solicitud de intercambio rechazada por HR: {SwapId}", swapRequestId);
+
+        await _notifier.NotifyAsync("SHIFT_SWAP_REJECTED_BY_HR", new { swap.Id, swap.RequesterId, swap.TargetUserId });
     }
 
     public async Task<ShiftSwapRequestDto?> GetSwapByIdAsync(int swapRequestId)
@@ -168,7 +224,7 @@ public class ShiftSwapService : IShiftSwapService
     public async Task<List<ShiftSwapRequestDto>> GetPendingSwapsAsync()
     {
         return await _context.ShiftSwapRequests
-            .Where(s => s.Status == "PENDING")
+            .Where(s => s.Status == SwapRequestStatus.PENDING.ToString())
             .OrderBy(s => s.CreatedAt)
             .Select(s => new ShiftSwapRequestDto
             {
@@ -179,7 +235,7 @@ public class ShiftSwapService : IShiftSwapService
                 TargetShiftId = s.TargetShiftId,
                 Reason = s.Reason,
                 Status = s.Status,
-                CreatedAt = s.CreatedAt
+                CreatedAt = (DateTime)s.CreatedAt
             })
             .ToListAsync();
     }
@@ -195,7 +251,7 @@ public class ShiftSwapService : IShiftSwapService
             TargetShiftId = swap.TargetShiftId,
             Reason = swap.Reason,
             Status = swap.Status,
-            CreatedAt = swap.CreatedAt
+            CreatedAt = (DateTime)swap.CreatedAt
         };
     }
 }

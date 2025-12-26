@@ -4,8 +4,38 @@ using Api.Domain.Exceptions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.Configuration;
+using System;
+using System.Threading.Tasks;
 
 namespace Api.Controllers;
+
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false)]
+public class RequireN8nTokenAttribute : ActionFilterAttribute
+{
+    private const string HeaderName = "X-N8N-TOKEN";
+
+    public override async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+    {
+        var config = context.HttpContext.RequestServices.GetService(typeof(IConfiguration)) as IConfiguration;
+        var expected = config?["N8n:ApiKey"];
+
+        if (string.IsNullOrEmpty(expected))
+        {
+            context.Result = new StatusCodeResult(500);
+            return;
+        }
+
+        if (!context.HttpContext.Request.Headers.TryGetValue(HeaderName, out var provided) || provided != expected)
+        {
+            context.Result = new UnauthorizedResult();
+            return;
+        }
+
+        await next();
+    }
+}
 
 [ApiController]
 [Route("api/[controller]")]
@@ -103,6 +133,7 @@ public class ShiftSwapsController : ControllerBase
         }
     }
 
+    // Keep internal approve method but not exposed to HR users via JWT
     [Authorize(Roles = "HR")]
     [HttpPost("{id}/approve")]
     public async Task<ActionResult<ShiftSwapRequestDto>> ApproveSwap(int id)
@@ -137,5 +168,44 @@ public class ShiftSwapsController : ControllerBase
     {
         var swaps = await _shiftSwapService.GetPendingSwapsAsync();
         return Ok(swaps);
+    }
+
+    // New HR endpoints using X-N8N-TOKEN
+    [HttpPost("{id}/hr/approve")]
+    [RequireN8nToken]
+    public async Task<IActionResult> HrApprove(int id)
+    {
+        try
+        {
+            await _shiftSwapService.ApproveByHrAsync(id);
+            return Ok(new { message = "Approved" });
+        }
+        catch (EntityNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("{id}/hr/reject")]
+    [RequireN8nToken]
+    public async Task<IActionResult> HrReject(int id)
+    {
+        try
+        {
+            await _shiftSwapService.RejectByHrAsync(id);
+            return Ok(new { message = "Rejected" });
+        }
+        catch (EntityNotFoundException ex)
+        {
+            return NotFound(new { message = ex.Message });
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
 }

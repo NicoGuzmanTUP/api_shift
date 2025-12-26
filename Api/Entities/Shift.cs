@@ -19,9 +19,7 @@ public partial class Shift
 
     public string Status { get; set; }
 
-    public virtual ICollection<ShiftSwapRequest> ShiftSwapRequestRequesterShifts { get; set; } = new List<ShiftSwapRequest>();
-
-    public virtual ICollection<ShiftSwapRequest> ShiftSwapRequestTargetShifts { get; set; } = new List<ShiftSwapRequest>();
+    public virtual ICollection<ShiftSwapRequest> ShiftSwapRequests { get; set; } = new List<ShiftSwapRequest>();
 
     public virtual User User { get; set; }
 }

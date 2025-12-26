@@ -1,0 +1,1 @@
+endpoint POST `https://localhost:7291/api/Auth/register` receives code 400 and usefully executes the seed

@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <File Path="planification.md" />
+    <File Path="status.md" />
     <Project Path="Api/Api.csproj" />
   </Folder>
 </Solution>
