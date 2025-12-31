@@ -61,13 +61,15 @@ public class ShiftSwapService : IShiftSwapService
         _context.ShiftSwapRequests.Add(swapRequest);
         await _context.SaveChangesAsync();
 
-        _logger.Information("Solicitud de intercambio creada: {SwapId} por {RequesterId} para {TargetUserId}", 
+        _logger.Information($"Solicitud de intercambio creada: {swapRequest.Id} por {swapRequest.RequesterId} para {swapRequest.TargetUserId}", 
             swapRequest.Id, requesterId, request.TargetUserId);
 
         // Prepare formatted shift info
         string requesterShiftDate = requesterShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         string requesterShiftTime = $"{requesterShift.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture)} - {requesterShift.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture)}";
 
+        string targetShiftDate = targetShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string targetShiftTime = $"{targetShift.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture)} - {targetShift.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture)}";
         // Notificar a n8n (asincrónico, fire-and-forget) including emails and shift info
         await _notifier.NotifyAsync("SHIFT_SWAP_REQUESTED", new
         {
@@ -80,7 +82,9 @@ public class ShiftSwapService : IShiftSwapService
             TargetEmail = targetUser.Email,
             ShiftDate = requesterShiftDate,
             ShiftTime = requesterShiftTime,
-            swapRequest.Reason
+            ShiftDateTarget = targetShiftDate,
+            ShiftTimeTarget = targetShiftTime,
+            Reason = swapRequest.Reason
         });
 
         return MapToDto(swapRequest);
@@ -104,12 +108,43 @@ public class ShiftSwapService : IShiftSwapService
 
         _logger.Information("Solicitud de intercambio marcada para aprobación HR: {SwapId} por usuario {UserId}", swapRequestId, userId);
 
-        await _notifier.NotifyAsync("SHIFT_SWAP_PENDING_HR", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+        // Load related data to build normalized payload
+        var requester = await _context.Users.FindAsync(swap.RequesterId)
+            ?? throw EntityNotFoundException.ForEntity("Usuario", swap.RequesterId);
+        var targetUser = await _context.Users.FindAsync(swap.TargetUserId)
+            ?? throw EntityNotFoundException.ForEntity("Usuario", swap.TargetUserId);
+
+        var requesterShift = await _context.Shifts.FindAsync(swap.RequesterShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.RequesterShiftId);
+        var targetShift = await _context.Shifts.FindAsync(swap.TargetShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.TargetShiftId);
+
+        string requesterShiftDate = requesterShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string requesterShiftTime = $"{requesterShift.StartTime:HH:mm} - {requesterShift.EndTime:HH:mm}";
+
+        string targetShiftDate = targetShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string targetShiftTime = $"{targetShift.StartTime:HH:mm} - {targetShift.EndTime:HH:mm}";
+
+        await _notifier.NotifyAsync("SHIFT_SWAP_PENDING_HR", new
+        {
+            swap.Id,
+            swap.RequesterId,
+            swap.TargetUserId,
+            RequesterName = requester.Name,
+            TargetName = targetUser.Name,
+            RequesterEmail = requester.Email,
+            TargetEmail = targetUser.Email,
+            ShiftDate = requesterShiftDate,
+            ShiftTime = requesterShiftTime,
+            ShiftDateTarget = targetShiftDate,
+            ShiftTimeTarget = targetShiftTime,
+            Reason = swap.Reason
+        });
 
         return MapToDto(swap);
     }
 
-    public async Task<ShiftSwapRequestDto> RejectSwapAsync(int swapRequestId, int userId)
+    public async Task<ShiftSwapRequestDto> RejectSwapAsync(int swapRequestId, int userId, string? reason = null)
     {
         var swap = await _context.ShiftSwapRequests.FindAsync(swapRequestId)
             ?? throw EntityNotFoundException.ForEntity("Solicitud", swapRequestId);
@@ -121,12 +156,43 @@ public class ShiftSwapService : IShiftSwapService
         if (swap.Status != SwapRequestStatus.PENDING.ToString())
             throw new InvalidOperationException($"No puedes rechazar una solicitud con estado {swap.Status}");
 
+        // Sólo actualizar campos permitidos por el usuario: Status y CreatedAt
         swap.Status = SwapRequestStatus.REJECTED.ToString();
+        swap.CreatedAt = DateTime.UtcNow;
+
+        // El campo Reason puede ser provisto por el usuario; si es null, dejar vacío
+        swap.Reason = reason ?? string.Empty;
+
         await _context.SaveChangesAsync();
 
         _logger.Information("Solicitud de intercambio rechazada: {SwapId} por usuario {UserId}", swapRequestId, userId);
 
-        await _notifier.NotifyAsync("SHIFT_SWAP_REJECTED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+        // Build normalized payload matching SHIFT_SWAP_REQUESTED structure
+        var requester = await _context.Users.FindAsync(swap.RequesterId);
+        var targetUser = await _context.Users.FindAsync(swap.TargetUserId);
+        var requesterShift = await _context.Shifts.FindAsync(swap.RequesterShiftId);
+        var targetShift = await _context.Shifts.FindAsync(swap.TargetShiftId);
+
+        string shiftDate = requesterShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string shiftTime = $"{requesterShift.StartTime:HH:mm} - {requesterShift.EndTime:HH:mm}";
+
+        string targetShiftDate = targetShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string targetShiftTime = $"{targetShift.StartTime.ToString("HH:mm", CultureInfo.InvariantCulture)} - {targetShift.EndTime.ToString("HH:mm", CultureInfo.InvariantCulture)}";
+        await _notifier.NotifyAsync("SHIFT_SWAP_REJECTED", new
+        {
+            swap.Id,
+            swap.RequesterId,
+            swap.TargetUserId,
+            RequesterName = requester?.Name,
+            TargetName = targetUser?.Name,
+            RequesterEmail = requester?.Email,
+            TargetEmail = targetUser?.Email,
+            ShiftDate = shiftDate,
+            ShiftTime = shiftTime,
+            ShiftDateTarget = targetShiftDate,
+            ShiftTimeTarget = targetShiftTime,
+            Reason = swap.Reason
+        });
 
         return MapToDto(swap);
     }
@@ -144,7 +210,28 @@ public class ShiftSwapService : IShiftSwapService
 
         _logger.Information("Solicitud de intercambio aprobada: {SwapId}", swapRequestId);
 
-        await _notifier.NotifyAsync("SHIFT_SWAP_APPROVED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+        // Build requester and target shift info
+        var requesterShift = await _context.Shifts.FindAsync(swap.RequesterShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.RequesterShiftId);
+        var targetShift = await _context.Shifts.FindAsync(swap.TargetShiftId)
+            ?? throw EntityNotFoundException.ForEntity("Turno", swap.TargetShiftId);
+
+        string requesterShiftDate = requesterShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string requesterShiftTime = $"{requesterShift.StartTime:HH:mm} - {requesterShift.EndTime:HH:mm}";
+
+        string targetShiftDate = targetShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string targetShiftTime = $"{targetShift.StartTime:HH:mm} - {targetShift.EndTime:HH:mm}";
+
+        await _notifier.NotifyAsync("SHIFT_SWAP_APPROVED", new
+        {
+            swap.Id,
+            swap.RequesterId,
+            swap.TargetUserId,
+            ShiftDateRequester = requesterShiftDate,
+            ShiftTimeRequester = requesterShiftTime,
+            ShiftDateTarget = targetShiftDate,
+            ShiftTimeTarget = targetShiftTime
+        });
 
         return MapToDto(swap);
     }
@@ -196,7 +283,25 @@ public class ShiftSwapService : IShiftSwapService
 
         _logger.Information("Solicitud de intercambio aprobada por HR: {SwapId}", swapRequestId);
 
-        await _notifier.NotifyAsync("SHIFT_SWAP_APPROVED", new { swap.Id, swap.RequesterId, swap.TargetUserId });
+        var reqShift = await _context.Shifts.FindAsync(swap.RequesterShiftId);
+        var tgtShift = await _context.Shifts.FindAsync(swap.TargetShiftId);
+
+        string reqShiftDate = reqShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string reqShiftTime = $"{reqShift.StartTime:HH:mm} - {reqShift.EndTime:HH:mm}";
+
+        string tgtShiftDate = tgtShift.ShiftDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string tgtShiftTime = $"{tgtShift.StartTime:HH:mm} - {tgtShift.EndTime:HH:mm}";
+
+        await _notifier.NotifyAsync("SHIFT_SWAP_APPROVED", new
+        {
+            swap.Id,
+            swap.RequesterId,
+            swap.TargetUserId,
+            ShiftDateRequester = reqShiftDate,
+            ShiftTimeRequester = reqShiftTime,
+            ShiftDateTarget = tgtShiftDate,
+            ShiftTimeTarget = tgtShiftTime
+        });
     }
 
     public async Task RejectByHrAsync(int swapRequestId)

@@ -37,6 +37,32 @@ public class RequireN8nTokenAttribute : ActionFilterAttribute
     }
 }
 
+//[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false)]
+//public class RequireApiKeyAttribute : ActionFilterAttribute
+//{
+//    private const string HeaderName = "ApiKey";
+
+//    public override async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
+//    {
+//        var config = context.HttpContext.RequestServices.GetService(typeof(IConfiguration)) as IConfiguration;
+//        var expected = config?["N8n:ApiKey"]; // Api key stored under N8n:ApiKey
+
+//        if (string.IsNullOrEmpty(expected))
+//        {
+//            context.Result = new StatusCodeResult(500);
+//            return;
+//        }
+
+//        if (!context.HttpContext.Request.Headers.TryGetValue(HeaderName, out var provided) || provided != expected)
+//        {
+//            context.Result = new UnauthorizedResult();
+//            return;
+//        }
+
+//        await next();
+//    }
+//}
+
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
@@ -77,6 +103,7 @@ public class ShiftSwapsController : ControllerBase
     }
 
     [HttpPost("{id}/accept")]
+    //[RequireApiKey]
     public async Task<ActionResult<ShiftSwapRequestDto>> AcceptSwap(int id)
     {
         try
@@ -96,12 +123,12 @@ public class ShiftSwapsController : ControllerBase
     }
 
     [HttpPost("{id}/reject")]
-    public async Task<ActionResult<ShiftSwapRequestDto>> RejectSwap(int id)
+    public async Task<ActionResult<ShiftSwapRequestDto>> RejectSwap(int id, [FromBody] RejectShiftSwapRequest request)
     {
         try
         {
             var userId = GetUserId();
-            var swap = await _shiftSwapService.RejectSwapAsync(id, userId);
+            var swap = await _shiftSwapService.RejectSwapAsync(id, userId, request?.Reason);
             return Ok(swap);
         }
         catch (EntityNotFoundException ex)
@@ -172,6 +199,7 @@ public class ShiftSwapsController : ControllerBase
 
     // New HR endpoints using X-N8N-TOKEN
     [HttpPost("{id}/hr/approve")]
+    [AllowAnonymous]
     [RequireN8nToken]
     public async Task<IActionResult> HrApprove(int id)
     {
@@ -191,6 +219,7 @@ public class ShiftSwapsController : ControllerBase
     }
 
     [HttpPost("{id}/hr/reject")]
+    [AllowAnonymous]
     [RequireN8nToken]
     public async Task<IActionResult> HrReject(int id)
     {
